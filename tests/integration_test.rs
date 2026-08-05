@@ -2,7 +2,8 @@
 //! - 所有测试调用 engine::run(EngineConfig)（而非子进程），依赖更轻
 //! - 每个测试用独立的临时目录：$TEMP/tgrep_it_{pid}_{autoinc}，彻底避免并行测试冲突
 //!
-//! 覆盖：递归 ON/OFF、防自锁、多关键字 OR、空目录、非法正则、忽略大小写 共 7 条。
+//! 覆盖：递归 ON/OFF、防自锁（递归/非递归两场景）、单关键字、多 -p 关键字 OR、
+//!       正则 OR、忽略大小写、非法正则、空目录、空模式集合、多层嵌套 BFS。
 
 use std::path::{Path, PathBuf};
 use std::process;
@@ -195,12 +196,16 @@ async fn output_inside_input_dir_self_lock_prevented() {
 }
 
 // ============================================================================
-// 测试用例 4 / 7：多关键字 OR 语义 + 忽略大小写，4 条命中
-// 模式：wangzheTRACE（小写），-i 开启
-// 匹配：
-//   a.log line2: AlphaMarker
-//   a.log line3: BetaMarker  <- 不含 trace，不匹配（关键词只给了 alphamarker）
-// 给 a.log 再加一行 ALPHAMARKER UPPERCASE，b.log 再加一行
+// 测试用例 4：忽略大小写（-i 开）下大小写混合命中
+//
+// 设置：
+//   a.log 追加 1 行全大写 ALPHAMARKER
+//   b.log 追加 1 行小写 alphamarker
+// 模式：vec!["alphamarker"]，ignore_case=true，recursive=false
+// 预期：
+//   a.log line2 (AlphaMarker) / line4 (ALPHAMARKER)
+//   b.log line3 (alphamarker lowercase)
+//   → total_matches = 3；BetaMarker 行不含 alphamarker，不命中
 // ============================================================================
 #[tokio::test]
 async fn multi_keyword_or_and_ignore_case() {
@@ -234,10 +239,24 @@ async fn multi_keyword_or_and_ignore_case() {
         "case_insensitive.log",
     );
     let stats = run(cfg).await.expect("run should succeed");
-    // 命中 2 处：a.log line2 (AlphaMarker) + a.log line4 (ALPHAMARKER) + b.log line3 (alphamarker)
-    // 注意 BetaMarker 不含 trace，不命中
     assert_eq!(stats.total_matches, 3);
     assert_eq!(stats.files_processed, 2);
+
+    // 读回输出并断言每行（大小写不敏感）都含 alphamarker，且 BetaMarker 行不在其中
+    let lines = s.read_output_lines_sorted("case_insensitive.log");
+    assert_eq!(lines.len(), 3);
+    for l in &lines {
+        assert!(
+            l.to_ascii_lowercase().contains("alphamarker"),
+            "expected line to contain alphamarker (case-insensitive), got: {}",
+            l
+        );
+        assert!(
+            !l.contains("BetaMarker cache miss"),
+            "BetaMarker 行不应命中 alphamarker 模式: {}",
+            l
+        );
+    }
 }
 
 // ============================================================================
@@ -295,12 +314,144 @@ async fn regex_level_or_matches_error_and_warn() {
     // 顶层 b.log 一条命中（betamarker ERROR）
     assert_eq!(stats.total_matches, 3);
     assert_eq!(stats.files_processed, 2);
-    let mut lines = s.read_output_lines_sorted("levels.log");
+    let lines = s.read_output_lines_sorted("levels.log");
     assert_eq!(lines.len(), 3);
     // 三条应分别包含 ERROR 或 WARN
-    for l in lines.iter_mut() {
+    for l in lines.iter() {
         assert!(l.contains("ERROR") || l.contains("WARN"), "line: {}", l);
     }
+}
+
+// ============================================================================
+// 测试用例 8：非递归下防自锁（输出文件放在扫描目录内、recursive=false）
+//
+// 覆盖 collect_files 单级 read_dir 分支里 is_file→skip output 的路径，
+// 防止未来重构递归/非递归分支时非递归路径的自锁过滤被误删。
+// ============================================================================
+#[tokio::test]
+async fn output_inside_input_dir_self_lock_prevented_non_recursive() {
+    let s = Sandbox::new();
+    // a.log 里加一个独一无二的 tag
+    std::fs::write(
+        s.root.join("a.log"),
+        "2026 NORECURSE_TAG single top-level line\n",
+    )
+    .unwrap();
+
+    let cfg = s.cfg(
+        vec!["NORECURSE_TAG"],
+        false,
+        false,           // recursive = OFF
+        "out_norec.log", // 输出文件位于扫描根目录
+    );
+    let stats = run(cfg).await.expect("run should succeed");
+    // 顶层 2 文件（a.log + b.log），输出文件不应被计入
+    assert_eq!(stats.files_processed, 2, "output file must not be counted");
+    assert_eq!(
+        stats.total_matches, 1,
+        "only the injected tag in a.log should match"
+    );
+
+    let lines = s.read_output_lines_sorted("out_norec.log");
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("NORECURSE_TAG"));
+}
+
+// ============================================================================
+// 测试用例 9：多 -p 关键字（patterns 长度 > 1）经 engine 走 OR 语义
+//
+// 关键：所有其它集成测试都只传 1 个 pattern，这里覆盖
+//   engine → MatchSet::compile(Vec![p1,p2]) → RegexSet OR → writer
+// 的完整路径；同时验证同一行命中多个模式时不会被写入两次。
+// ============================================================================
+#[tokio::test]
+async fn multi_pattern_separate_flags_or_semantics() {
+    let s = Sandbox::new();
+    // 用两个字面量模式；a.log 有 AlphaMarker + BetaMarker 各 1 行；
+    // b.log 只有 betamarker（小写），默认 ignore_case=false，不应命中 BetaMarker。
+    let cfg = s.cfg(
+        vec!["AlphaMarker", "BetaMarker"],
+        false, // ignore_case OFF（默认大小写敏感）
+        false, // recursive OFF
+        "multi_p.log",
+    );
+    let stats = run(cfg).await.expect("run should succeed");
+    // a.log line2 AlphaMarker + line3 BetaMarker → 2 命中
+    assert_eq!(stats.files_processed, 2);
+    assert_eq!(stats.total_matches, 2);
+
+    let lines = s.read_output_lines_sorted("multi_p.log");
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().any(|l| l.contains("AlphaMarker")));
+    assert!(lines.iter().any(|l| l.contains("BetaMarker")));
+    // 确保 betamarker（小写）不会因大小写敏感而误命中 BetaMarker
+    assert!(
+        lines
+            .iter()
+            .all(|l| !l.contains("betamarker module IO timeout"))
+    );
+}
+
+// ============================================================================
+// 测试用例 10：空模式集合（patterns=[]）锁定当前行为
+//
+// CLI 层 clap required=true 会拦截空 -p，但 engine::run 作为 pub API 可被库
+// 调用者直接传入空 patterns。当前 MatchSet::compile(&[]) 会成功编译空
+// RegexSet（is_match 永远 false），engine 扫完所有文件但 0 命中。
+// 本测试锁定此行为；若未来决定改为显式报错，请同步更新本测试。
+// ============================================================================
+#[tokio::test]
+async fn empty_patterns_matches_nothing_outputs_empty() {
+    let s = Sandbox::new();
+    let cfg = s.cfg(
+        Vec::<String>::new(), // 空 patterns
+        false,
+        false,
+        "empty_pat.log",
+    );
+    let stats = run(cfg)
+        .await
+        .expect("empty patterns should not hard-fail today");
+    // 顶层 2 个文件都被处理，但每行都不匹配
+    assert_eq!(stats.files_processed, 2);
+    assert_eq!(stats.total_matches, 0);
+
+    let lines = s.read_output_lines_sorted("empty_pat.log");
+    assert!(
+        lines.is_empty(),
+        "output must be empty when no patterns supplied"
+    );
+}
+
+// ============================================================================
+// 测试用例 11：BFS 递归 > 1 层嵌套（root/sub/sub2/deep2.log）
+//
+// 覆盖 VecDeque BFS 能正确处理多级子目录入队出队，不遗漏深层文件。
+// ============================================================================
+#[tokio::test]
+async fn recursive_bfs_multi_level_nesting() {
+    let s = Sandbox::new();
+    // 在 sub 下再建一层 sub2，写一个含唯一 tag 的文件
+    let sub2 = s.root.join("sub").join("sub2");
+    std::fs::create_dir_all(&sub2).expect("create sub2 dir");
+    std::fs::write(
+        sub2.join("deep2.log"),
+        "2026 DEEP2_TAG level-3 nested hit\n",
+    )
+    .unwrap();
+
+    let cfg = s.cfg(vec!["DEEP2_TAG"], false, true, "deep2_out.log");
+    let stats = run(cfg).await.expect("run should succeed");
+    // recursive=ON：a.log + b.log + sub/deep.log + sub/sub2/deep2.log = 4
+    assert_eq!(
+        stats.files_processed, 4,
+        "BFS should visit a/b/sub/deep/sub/sub2/deep2"
+    );
+    assert_eq!(stats.total_matches, 1);
+
+    let lines = s.read_output_lines_sorted("deep2_out.log");
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("DEEP2_TAG level-3"));
 }
 
 // ============================================================================

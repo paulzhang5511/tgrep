@@ -67,10 +67,15 @@ mod tests {
 
     #[test]
     fn literal_match_single_pattern() {
-        // 单关键字字面量匹配
+        // 单关键字字面量匹配（大小写敏感）
         let m = MatchSet::compile(&["AlphaMarker".to_string()], false).unwrap();
         assert!(m.is_match("2026-08-05 [ERROR] AlphaMarker failed to connect DB"));
         assert!(!m.is_match("2026-08-05 [INFO] heartbeat ok"));
+        // 反向：同字面量的小写形式不应命中（默认大小写敏感）
+        assert!(
+            !m.is_match("2026-08-05 [ERROR] alphamarker lowercase"),
+            "case-sensitive match must NOT match lowercase variant"
+        );
     }
 
     #[test]

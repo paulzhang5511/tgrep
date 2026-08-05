@@ -93,4 +93,41 @@ mod tests {
             err.kind()
         );
     }
+
+    #[test]
+    fn parse_all_flags_long_form() {
+        // 长选项形式：--dir / --patterns（多值一次给出）/ --output / --ignore-case / --recursive
+        let cli = Cli::parse_from([
+            "tgrep",
+            "--dir",
+            "./logs",
+            "--patterns",
+            "a",
+            "b",
+            "--output",
+            "out.log",
+            "--ignore-case",
+            "--recursive",
+        ]);
+        assert_eq!(cli.dir, "./logs");
+        assert_eq!(cli.patterns, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(cli.output.as_deref(), Some("out.log"));
+        assert!(cli.ignore_case);
+        assert!(cli.recursive);
+    }
+
+    #[test]
+    fn missing_dir_is_reported_by_clap() {
+        // -d/--dir 没有 default_value，也不是 Option，因此 clap 4 会把它当作 required 参数。
+        // 该测试锁定这个行为，防止未来误把 dir 改为 Option<String> 而无提示。
+        let err = Cli::try_parse_from(["tgrep", "-p", "foo"]).unwrap_err();
+        assert!(
+            matches!(
+                err.kind(),
+                ErrorKind::MissingRequiredArgument | ErrorKind::TooFewValues
+            ),
+            "Unexpected error kind for missing -d: {:?}",
+            err.kind()
+        );
+    }
 }
