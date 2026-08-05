@@ -18,7 +18,7 @@ pub fn init_logging(default_level: impl Into<Option<&'static str>>) {
         },
     };
 
-    // 使用 try_init，忽略重复初始化错误（测试或库使用场景下可能多次调用）
+    // 使用 set_global_default + let _ 忽略重复初始化错误（测试或库使用场景下可能多次调用）
     let subscriber = FmtSubscriber::builder()
         .with_env_filter(env_filter)
         .finish();

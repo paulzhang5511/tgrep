@@ -177,19 +177,6 @@ cargo clippy --all-targets -- -D warnings
 
 ---
 
-## CI
-
-GitHub Actions 在 `.github/workflows/ci.yml` 定义了如下 job（Ubuntu latest + stable Rust）：
-
-- `cargo fmt --all --check`
-- `cargo check --all-targets`
-- `cargo clippy --all-targets -- -D warnings`
-- `cargo test --all-targets`
-
-PR 与 main 分支 push 都会自动触发。
-
----
-
 ## 设计取舍速记
 
 - **不引入 `walkdir`**：递归使用 Tokio 原生 `read_dir` + `VecDeque` 手动 BFS，保持全异步执行器一致性。

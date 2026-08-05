@@ -85,11 +85,8 @@ mod tests {
     #[test]
     fn ignore_case_matches_mixed_case() {
         // 忽略大小写：aLpHaMaRkEr / BetaMarker / betamarker 都能匹配小写输入的模式
-        let m = MatchSet::compile(
-            &["alphamarker".to_string(), "betamarker".to_string()],
-            true,
-        )
-        .unwrap();
+        let m = MatchSet::compile(&["alphamarker".to_string(), "betamarker".to_string()], true)
+            .unwrap();
         assert!(m.is_match("AlphaMarker failed"));
         assert!(m.is_match("betamarker module IO timeout"));
         assert!(m.is_match("ALPHAMARKER restart"));

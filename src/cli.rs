@@ -84,9 +84,13 @@ mod tests {
         // 完全不传 -p，num_args=1.. 会触发 "the following required arguments were not provided"
         let err = Cli::try_parse_from(["tgrep", "-d", "./logs"]).unwrap_err();
         // ErrorKind::MissingRequiredArgument (clap 4.x)
-        matches!(
-            err.kind(),
-            ErrorKind::MissingRequiredArgument | ErrorKind::TooFewValues
+        assert!(
+            matches!(
+                err.kind(),
+                ErrorKind::MissingRequiredArgument | ErrorKind::TooFewValues
+            ),
+            "Unexpected error kind for missing -p: {:?}",
+            err.kind()
         );
     }
 }
