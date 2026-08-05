@@ -27,8 +27,6 @@
 
 ## 安装
 
-需要 **Rust 1.74+**（`edition = "2021"`）。
-
 ```bash
 # Release 构建（推荐）
 cargo build --release
