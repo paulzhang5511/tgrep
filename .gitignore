@@ -1,0 +1,14 @@
+# Rust 构建产物
+/target/
+Cargo.lock.bak
+
+# 运行时生成的日志输出（保留 test_logs/ 作为测试夹具）
+/smoke_*.log
+/output_*.log
+
+# 系统 / 编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
