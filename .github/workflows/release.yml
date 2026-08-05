@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            bin: tgrep
+            archive: tgrep-linux-x86_64.tar.gz
+            ext: ""
+          - name: macos-x86_64
+            os: macos-13
+            bin: tgrep
+            archive: tgrep-macos-x86_64.tar.gz
+            ext: ""
+          - name: macos-aarch64
+            os: macos-14
+            bin: tgrep
+            archive: tgrep-macos-aarch64.tar.gz
+            ext: ""
+          - name: windows-x86_64
+            os: windows-latest
+            bin: tgrep.exe
+            archive: tgrep-windows-x86_64.zip
+            ext: ".exe"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/release/${{ matrix.bin }}" "dist/${{ matrix.bin }}"
+          chmod +x "dist/${{ matrix.bin }}"
+          cd dist
+          tar czf "../${{ matrix.archive }}" "${{ matrix.bin }}"
+          cd ..
+          sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/release/${{ matrix.bin }}" "dist/${{ matrix.bin }}"
+          Compress-Archive -Path "dist/${{ matrix.bin }}" -DestinationPath "${{ matrix.archive }}" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.archive }}").Hash.ToLower()
+          "$hash  ${{ matrix.archive }}" | Out-File -Encoding ascii "${{ matrix.archive }}.sha256"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
